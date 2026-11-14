@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Vulonz License Dashboard</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="Vulonz License Dashboard home">
+          <span class="brand-mark" aria-hidden="true">V</span>
+          <span>Vulonz <span class="muted">/</span> Licenses</span>
+        </a>
+        <span class="admin-label">Administrator dashboard</span>
+      </header>
+
+      <section id="login-view" class="panel login-panel">
+        <p class="eyebrow">PRIVATE CONTROL PANEL</p>
+        <h1>Sign in</h1>
+        <p class="intro">Connect to your licensing server to manage lifetime keys.</p>
+        <form id="login-form">
+          <label for="server-url">Render server URL</label>
+          <input
+            id="server-url"
+            name="server-url"
+            type="url"
+            placeholder="https://your-service.onrender.com"
+            autocomplete="url"
+            required
+          >
+          <p class="field-help">Use the HTTPS URL shown on your Render service.</p>
+          <label for="admin-password">Admin password</label>
+          <input
+            id="admin-password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          >
+          <button class="primary full-width" type="submit">Sign in securely</button>
+        </form>
+        <p id="login-message" class="message" role="status" aria-live="polite"></p>
+        <p class="security-note">Your password is sent only to the server URL above and is never saved in this browser.</p>
+      </section>
+
+      <section id="dashboard-view" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">LICENSE MANAGEMENT</p>
+            <h1>Your keys</h1>
+            <p class="intro">Create lifetime keys and manage their device activations.</p>
+          </div>
+          <button id="sign-out" class="quiet" type="button">Sign out</button>
+        </div>
+
+        <div id="dashboard-message" class="message" role="status" aria-live="polite"></div>
+        <section id="new-key" class="panel new-key-panel" hidden>
+          <div>
+            <p class="eyebrow">COPY NOW · SHOWN ONCE</p>
+            <h2>New lifetime key</h2>
+            <code id="new-key-value"></code>
+          </div>
+          <button id="copy-key" class="secondary" type="button">Copy key</button>
+        </section>
+
+        <section class="panel toolbar">
+          <div>
+            <h2>License keys</h2>
+            <p class="field-help">Each key can be active on one installation at a time.</p>
+          </div>
+          <button id="create-key" class="primary" type="button">Create lifetime key</button>
+        </section>
+
+        <section class="panel table-panel" aria-label="License keys">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Key</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Created</th>
+                  <th scope="col">Device</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="key-list"></tbody>
+            </table>
+          </div>
+          <p id="empty-state" class="empty-state" hidden>No keys yet. Create one to get started.</p>
+        </section>
+      </section>
+      <footer>Keep your administrator password and newly created keys private.</footer>
+    </main>
+  </body>
+</html>
