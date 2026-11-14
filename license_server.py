@@ -15,6 +15,7 @@ from flask import (
     Flask,
     abort,
     flash,
+    g,
     redirect,
     render_template_string,
     request,
@@ -146,6 +147,11 @@ def _initialize_database(path: str) -> None:
                 attempts INTEGER NOT NULL,
                 PRIMARY KEY (scope, ip_address)
             );
+            CREATE TABLE IF NOT EXISTS admin_api_sessions (
+                token_hash TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
             """
         )
         license_columns = {
@@ -194,6 +200,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         SECRET_KEY=os.environ.get("APP_SECRET_KEY", ""),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", ""),
         KEY_HASH_SECRET=os.environ.get("KEY_HASH_SECRET", ""),
+        DASHBOARD_ORIGIN=os.environ.get("DASHBOARD_ORIGIN", ""),
         DATABASE_PATH=os.environ.get("DATABASE_PATH", "/var/data/licenses.sqlite3"),
         TRUST_RENDER_PROXY=os.environ.get("TRUST_RENDER_PROXY", "true").lower() == "true",
         SESSION_COOKIE_SECURE=True,
@@ -230,6 +237,51 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             abort(400, "Invalid form token.")
         session["csrf_token"] = secrets.token_urlsafe(32)
 
+    def license_items() -> list[dict[str, Any]]:
+        with database() as connection:
+            licenses = connection.execute(
+                "SELECT id, masked_key, status, created_at, device_id "
+                "FROM licenses ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        return [
+            {
+                **dict(item),
+                "created_at": time.strftime(
+                    "%Y-%m-%d %H:%M UTC", time.gmtime(item["created_at"])
+                ),
+            }
+            for item in licenses
+        ]
+
+    def create_lifetime_key() -> str:
+        random_part = secrets.token_hex(16).upper()
+        key = "VZ-" + "-".join(
+            random_part[index : index + 4] for index in range(0, len(random_part), 4)
+        )
+        with database() as connection:
+            connection.execute(
+                "INSERT INTO licenses (key_hash, masked_key, status, created_at) "
+                "VALUES (?, ?, 'active', ?)",
+                (
+                    _license_key_hash(key, app.config["KEY_HASH_SECRET"]),
+                    f"VZ-****-****-****-****-****-****-{random_part[-4:]}",
+                    int(time.time()),
+                ),
+            )
+        return key
+
+    def api_license_items() -> list[dict[str, Any]]:
+        return [
+            {
+                "id": item["id"],
+                "masked_key": item["masked_key"],
+                "status": item["status"],
+                "created_at": item["created_at"],
+                "device_bound": item["device_id"] is not None,
+            }
+            for item in license_items()
+        ]
+
     def administrator_required(function: Any) -> Any:
         @wraps(function)
         def decorated(*args: Any, **kwargs: Any) -> Any:
@@ -239,26 +291,36 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
         return decorated
 
+    def administrator_api_required(function: Any) -> Any:
+        @wraps(function)
+        def decorated(*args: Any, **kwargs: Any) -> Any:
+            authorization = request.headers.get("Authorization", "")
+            scheme, separator, token = authorization.partition(" ")
+            if (
+                scheme.lower() != "bearer"
+                or not separator
+                or DEVICE_TOKEN_PATTERN.fullmatch(token) is None
+            ):
+                return {"error": "Administrator authentication required."}, 401
+            token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+            with database() as connection:
+                token_row = connection.execute(
+                    "SELECT expires_at FROM admin_api_sessions WHERE token_hash = ?",
+                    (token_hash,),
+                ).fetchone()
+            if token_row is None or token_row["expires_at"] <= int(time.time()):
+                return {"error": "Administrator session expired. Sign in again."}, 401
+            g.admin_api_token_hash = token_hash
+            return function(*args, **kwargs)
+
+        return decorated
+
     def dashboard(new_key: str | None = None) -> str:
-        with database() as connection:
-            licenses = connection.execute(
-                "SELECT id, masked_key, status, created_at, device_id "
-                "FROM licenses ORDER BY created_at DESC, id DESC"
-            ).fetchall()
-            license_items = [
-                {
-                    **dict(item),
-                    "created_at": time.strftime(
-                        "%Y-%m-%d %H:%M UTC", time.gmtime(item["created_at"])
-                    ),
-                }
-                for item in licenses
-            ]
         return render_template_string(
             DASHBOARD_PAGE,
             styles=STYLES,
             csrf_token=csrf_token(),
-            licenses=license_items,
+            licenses=license_items(),
             new_key=new_key,
         )
 
@@ -274,11 +336,114 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'none'"
         )
+        if request.path.startswith("/api/admin/"):
+            origin = request.headers.get("Origin", "")
+            response.headers.add("Vary", "Origin")
+            if origin and origin == app.config["DASHBOARD_ORIGIN"]:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Headers"] = (
+                    "Authorization, Content-Type"
+                )
+                response.headers["Access-Control-Allow-Methods"] = (
+                    "GET, POST, OPTIONS"
+                )
+                response.headers["Access-Control-Max-Age"] = "600"
         return response
+
+    @app.before_request
+    def protect_admin_api() -> Any:
+        if not request.path.startswith("/api/admin/"):
+            return None
+        allowed_origin = app.config["DASHBOARD_ORIGIN"]
+        if not allowed_origin or request.headers.get("Origin") != allowed_origin:
+            abort(403)
+        if request.method == "OPTIONS":
+            return "", 204
+        return None
 
     @app.get("/healthz")
     def health() -> tuple[dict[str, str], int]:
         return {"status": "ok"}, 200
+
+    @app.post("/api/admin/login")
+    def admin_api_login() -> tuple[dict[str, Any], int]:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get("password"), str):
+            return {"error": "A JSON password is required."}, 400
+        with database() as connection:
+            allowed = _rate_limit(
+                connection, "admin-login", request.remote_addr or "unknown", 8, 900
+            )
+        if not allowed:
+            return {"error": "Too many sign-in attempts. Try again later."}, 429
+        if not hmac.compare_digest(payload["password"], app.config["ADMIN_PASSWORD"]):
+            return {"error": "Sign-in failed."}, 401
+
+        token = secrets.token_urlsafe(32)
+        now = int(time.time())
+        expires_at = now + 1800
+        token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+        with database() as connection:
+            connection.execute(
+                "DELETE FROM admin_api_sessions WHERE expires_at <= ?", (now,)
+            )
+            connection.execute(
+                "INSERT INTO admin_api_sessions (token_hash, created_at, expires_at) "
+                "VALUES (?, ?, ?)",
+                (token_hash, now, expires_at),
+            )
+        return {"token": token, "expires_at": expires_at}, 200
+
+    @app.get("/api/admin/keys")
+    @administrator_api_required
+    def admin_api_keys() -> dict[str, Any]:
+        return {"keys": api_license_items()}
+
+    @app.post("/api/admin/keys")
+    @administrator_api_required
+    def admin_api_create_key() -> tuple[dict[str, Any], int]:
+        key = create_lifetime_key()
+        return {"key": key, "keys": api_license_items()}, 201
+
+    @app.post("/api/admin/keys/<int:license_id>/revoke")
+    @administrator_api_required
+    def admin_api_revoke_key(
+        license_id: int,
+    ) -> tuple[dict[str, str], int] | dict[str, str]:
+        with database() as connection:
+            updated = connection.execute(
+                "UPDATE licenses SET status = 'revoked', revoked_at = ? "
+                "WHERE id = ? AND status = 'active'",
+                (int(time.time()), license_id),
+            ).rowcount
+        if not updated:
+            return {"error": "Active key not found."}, 404
+        return {"status": "revoked"}
+
+    @app.post("/api/admin/keys/<int:license_id>/reset-device")
+    @administrator_api_required
+    def admin_api_reset_device(
+        license_id: int,
+    ) -> tuple[dict[str, str], int] | dict[str, str]:
+        with database() as connection:
+            updated = connection.execute(
+                "UPDATE licenses SET device_id = NULL, device_token_hash = NULL, "
+                "activated_at = NULL WHERE id = ? AND status = 'active'",
+                (license_id,),
+            ).rowcount
+        if not updated:
+            return {"error": "Active key not found."}, 404
+        return {"status": "device reset"}
+
+    @app.post("/api/admin/logout")
+    @administrator_api_required
+    def admin_api_logout() -> dict[str, str]:
+        with database() as connection:
+            connection.execute(
+                "DELETE FROM admin_api_sessions WHERE token_hash = ?",
+                (g.admin_api_token_hash,),
+            )
+        return {"status": "signed out"}
 
     @app.get("/")
     def home() -> Any:

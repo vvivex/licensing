@@ -16,5 +16,7 @@ services:
         sync: false
       - key: KEY_HASH_SECRET
         sync: false
+      - key: DASHBOARD_ORIGIN
+        value: https://vvivex.github.io
       - key: DATABASE_PATH
         value: /var/data/licenses.sqlite3
