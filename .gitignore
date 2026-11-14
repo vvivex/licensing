@@ -1,0 +1,36 @@
+# Keep the desktop client and its bundled assets out of the Render repository.
+/main.py
+/licensing.py
+/requirements.txt
+/assets/
+/test_license_server.py
+
+# Local Python environments, bytecode, and build outputs.
+/.venv/
+/venv/
+/__pycache__/
+**/__pycache__/
+*.py[cod]
+/build/
+/dist/
+
+# Local configuration, credentials, and license databases.
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+settings.json
+
+# Operating-system and editor files.
+.DS_Store
+Thumbs.db
+.vscode/

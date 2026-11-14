@@ -1,0 +1,15 @@
+# Vulonz license server setup
+
+## Deploy to Render
+
+1. Create a GitHub repository and create a Render Blueprint from it. The `.gitignore` deliberately excludes the desktop app source, client dependencies, tests, and bundled assets; the Render deployment only needs the server and its dedicated requirements file. Git ignores only untracked files—if app files were previously committed, remove them from Git history or use a clean private server-only repository before making anything public. A public repo exposes the server source, not the excluded app source; use a private repo if you also want the server implementation private.
+2. Set `APP_SECRET_KEY`, `KEY_HASH_SECRET`, and `ADMIN_PASSWORD` as Render environment secrets before deploying. Generate the first two independently from at least 32 random bytes (for example, run `python -c "import secrets; print(secrets.token_urlsafe(48))"` twice). Set a unique admin password of at least 16 characters and store it in a password manager. Keep `KEY_HASH_SECRET` unchanged; rotating it invalidates all existing keys.
+3. Keep the Render persistent disk mounted at `/var/data`. The SQLite database is stored there so licenses survive deploys and restarts. Persistent disks may require a paid Render instance. Do not remove the disk; deleting it deletes all key records.
+4. Open the Render service's HTTPS URL (it redirects to the sign-in page) and sign in at `/admin/login`. Create keys from the dashboard, copy each key when shown, and distribute it securely. The server stores only keyed hashes, so a key cannot be retrieved after it is created.
+5. To migrate the desktop client, set `VULONZ_LICENSE_SERVER_URL` to the service's HTTPS URL in the environment used to launch the app. For packaged clients, configure that value in the build environment (or set the `LICENSE_SERVER_URL` default in `main.py`) before building and distributing them.
+
+Each key activates on one installation. The app creates a random installation ID and a separate random installation credential, protects both the credential and saved key with Windows DPAPI for the current Windows user, and sends the credential over HTTPS. The server stores only its SHA-256 hash, so copying just a key and installation ID is not enough to validate another installation. Use **Reset device** in the dashboard before moving a key to another installation, and close the old app first. If you already activated a key with an older server version, reset its device binding once before using this version.
+
+The client checks the server at startup and every five minutes; a server outage or revoked key locks the app after the next check. Keep the Render service available for the app to remain authorized. The installation credential makes casual UUID copying harder, but it is not hardware attestation: a determined user controlling the client can extract local secrets or patch the Python app to bypass its checks.
+
+Use strong, private Render secrets, keep the repository private, and never put admin credentials or key-hashing secrets in the desktop app. Back up the persistent disk before any migration or database maintenance.

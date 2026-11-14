@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: vulonz-license-server
+    runtime: python
+    buildCommand: pip install -r requirements-server.txt
+    startCommand: gunicorn license_server:app --workers 2 --bind 0.0.0.0:$PORT
+    healthCheckPath: /healthz
+    disk:
+      name: license-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: APP_SECRET_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: KEY_HASH_SECRET
+        sync: false
+      - key: DATABASE_PATH
+        value: /var/data/licenses.sqlite3
